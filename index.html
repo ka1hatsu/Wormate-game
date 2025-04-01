@@ -4,10 +4,551 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Multiplayer Worm Game</title>
-    <link rel="stylesheet" href="styles.css">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #121212;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #scoreBoard {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px 0;
+        }
+        #mobileControls {
+            display: none;
+            position: absolute;
+            bottom: 80px;
+            width: 100%;
+            text-align: center;
+        }
+        .mobile-btn {
+            width: 60px;
+            height: 60px;
+            margin: 5px;
+            background-color: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            user-select: none;
+        }
+        @media (max-width: 768px) {
+            #mobileControls {
+                display: block;
+            }
+            #controls {
+                font-size: 14px;
+            }
+        }
+    </style>
 </head>
 <body>
     <canvas id="gameCanvas"></canvas>
-    <script src="script.js"></script>
-</body>
-</html>
+    <div id="scoreBoard">Score: 0</div>
+    <div id="mobileControls">
+        <div class="mobile-btn" id="upBtn">↑</div><br>
+        <div class="mobile-btn" id="leftBtn">←</div>
+        <div class="mobile-btn" id="downBtn">↓</div>
+        <div class="mobile-btn" id="rightBtn">→</div>
+    </div>
+    <div id="controls">
+        Use arrow keys to move | Collect red food to grow | Avoid collisions
+    </div>
+
+    <script>
+        // Game configuration
+        const config = {
+            worm: {
+                initialLength: 10,
+                maxLength: 100,
+                segmentSize: 12,
+                speed: 3,
+                turnDelay: 100 // milliseconds between direction changes
+            },
+            food: {
+                size: 8,
+                spawnAmount: 5,
+                colors: ['#ff5252', '#ffeb3b', '#4caf50', '#2196f3']
+            },
+            powerups: {
+                spawnChance: 0.02, // 2% chance per frame
+                types: [
+                    { color: '#ff9800', effect: 'speed', duration: 5000, multiplier: 2 },
+                    { color: '#9c27b0', effect: 'invincible', duration: 3000 },
+                    { color: '#00bcd4', effect: 'ghost', duration: 4000 }
+                ]
+            }
+        };
+
+        // Game elements
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const scoreBoard = document.getElementById("scoreBoard");
+        
+        // Set canvas size
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // For demo purposes - in a real game, replace with your actual WebSocket server URL
+        // const socket = new WebSocket("wss://your-server-url");
+        const socket = {
+            send: (data) => console.log("WebSocket message:", data),
+            onopen: null,
+            onmessage: null
+        };
+        
+        // Mock WebSocket for demo
+        setTimeout(() => {
+            if (socket.onopen) socket.onopen();
+        }, 500);
+
+        // Get player name
+        let playerName = localStorage.getItem('wormGameName') || 
+                         prompt("Enter your name:") || 
+                         "Player" + Math.floor(Math.random() * 1000);
+        localStorage.setItem('wormGameName', playerName);
+
+        class Worm {
+            constructor(id, color, name, x, y) {
+                this.id = id;
+                this.segments = [];
+                this.direction = { x: 1, y: 0 };
+                this.nextDirection = { x: 1, y: 0 };
+                this.speed = config.worm.speed;
+                this.color = color;
+                this.name = name;
+                this.score = 0;
+                this.lastTurnTime = 0;
+                this.effects = [];
+                this.isInvincible = false;
+                this.isGhost = false;
+                
+                // Initialize segments
+                const startX = x || Math.random() * canvas.width;
+                const startY = y || Math.random() * canvas.height;
+                for (let i = 0; i < config.worm.initialLength; i++) {
+                    this.segments.push({
+                        x: startX - i * config.worm.segmentSize,
+                        y: startY
+                    });
+                }
+            }
+
+            update(timestamp) {
+                // Apply effects
+                this.updateEffects(timestamp);
+                
+                // Change direction if enough time has passed
+                if (timestamp - this.lastTurnTime > config.worm.turnDelay) {
+                    this.direction = { ...this.nextDirection };
+                    this.lastTurnTime = timestamp;
+                }
+                
+                // Calculate new head position
+                const head = {
+                    x: this.segments[0].x + this.direction.x * this.getCurrentSpeed(),
+                    y: this.segments[0].y + this.direction.y * this.getCurrentSpeed()
+                };
+                
+                // Wrap around screen edges
+                if (head.x < 0) head.x = canvas.width;
+                if (head.x > canvas.width) head.x = 0;
+                if (head.y < 0) head.y = canvas.height;
+                if (head.y > canvas.height) head.y = 0;
+                
+                this.segments.unshift(head);
+                if (this.segments.length > config.worm.maxLength) {
+                    this.segments.pop();
+                }
+            }
+
+            getCurrentSpeed() {
+                const speedEffect = this.effects.find(e => e.type === 'speed');
+                return speedEffect ? this.speed * speedEffect.multiplier : this.speed;
+            }
+
+            updateEffects(timestamp) {
+                this.effects = this.effects.filter(effect => {
+                    return timestamp < effect.startTime + effect.duration;
+                });
+                
+                this.isInvincible = this.effects.some(e => e.type === 'invincible');
+                this.isGhost = this.effects.some(e => e.type === 'ghost');
+            }
+
+            addEffect(type, duration, multiplier = 1) {
+                const timestamp = performance.now();
+                this.effects.push({
+                    type,
+                    startTime: timestamp,
+                    duration,
+                    multiplier
+                });
+            }
+
+            grow(amount = 1) {
+                for (let i = 0; i < amount; i++) {
+                    this.segments.push({ ...this.segments[this.segments.length - 1] });
+                }
+                this.score += amount * 10;
+            }
+
+            shrink(amount = 1) {
+                for (let i = 0; i < amount && this.segments.length > 3; i++) {
+                    this.segments.pop();
+                }
+                this.score = Math.max(0, this.score - amount * 5);
+            }
+
+            changeDirection(newDirection) {
+                // Prevent 180-degree turns
+                if (this.direction.x !== -newDirection.x || this.direction.y !== -newDirection.y) {
+                    this.nextDirection = newDirection;
+                }
+            }
+
+            draw(ctx) {
+                // Draw segments with gradient
+                for (let i = 0; i < this.segments.length; i++) {
+                    const segment = this.segments[i];
+                    const gradient = ctx.createRadialGradient(
+                        segment.x, segment.y, 0,
+                        segment.x, segment.y, config.worm.segmentSize
+                    );
+                    
+                    // Head is brighter
+                    if (i === 0) {
+                        gradient.addColorStop(0, lightenColor(this.color, 40));
+                        gradient.addColorStop(1, this.color);
+                    } else {
+                        gradient.addColorStop(0, this.color);
+                        gradient.addColorStop(1, darkenColor(this.color, 20));
+                    }
+                    
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(segment.x, segment.y, config.worm.segmentSize, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Draw effect indicators
+                    if (i === 0) {
+                        if (this.isInvincible) {
+                            ctx.strokeStyle = '#ffeb3b';
+                            ctx.lineWidth = 3;
+                            ctx.beginPath();
+                            ctx.arc(segment.x, segment.y, config.worm.segmentSize + 3, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                        
+                        if (this.isGhost) {
+                            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                            ctx.beginPath();
+                            ctx.arc(segment.x, segment.y, config.worm.segmentSize / 2, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+                }
+                
+                // Draw name
+                ctx.fillStyle = "white";
+                ctx.font = "14px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText(this.name, this.segments[0].x, this.segments[0].y - config.worm.segmentSize - 5);
+                ctx.textAlign = "left";
+            }
+        }
+
+        class Food {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = config.food.size;
+                this.color = config.food.colors[Math.floor(Math.random() * config.food.colors.length)];
+                this.nutrition = 1;
+                
+                // Special food has different properties
+                if (Math.random() < 0.1) {
+                    this.size *= 1.5;
+                    this.nutrition = 3;
+                    this.color = '#ffeb3b';
+                }
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Draw glow for special food
+                if (this.nutrition > 1) {
+                    ctx.shadowColor = this.color;
+                    ctx.shadowBlur = 10;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+            }
+        }
+
+        class PowerUp {
+            constructor() {
+                const type = config.powerups.types[Math.floor(Math.random() * config.powerups.types.length)];
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = 15;
+                this.type = type.effect;
+                this.color = type.color;
+                this.duration = type.duration;
+                this.multiplier = type.multiplier || 1;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Pulsing effect
+                const pulseSize = this.size * (0.8 + 0.2 * Math.sin(performance.now() / 200));
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, pulseSize, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        // Helper functions
+        function lightenColor(color, percent) {
+            const num = parseInt(color.replace('#', ''), 16);
+            const amt = Math.round(2.55 * percent);
+            const R = (num >> 16) + amt;
+            const G = (num >> 8 & 0x00FF) + amt;
+            const B = (num & 0x0000FF) + amt;
+            return `#${(
+                0x1000000 + 
+                (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 + 
+                (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 + 
+                (B < 255 ? B < 1 ? 0 : B : 255)
+            ).toString(16).slice(1)}`;
+        }
+
+        function darkenColor(color, percent) {
+            const num = parseInt(color.replace('#', ''), 16);
+            const amt = Math.round(2.55 * percent);
+            const R = (num >> 16) - amt;
+            const G = (num >> 8 & 0x00FF) - amt;
+            const B = (num & 0x0000FF) - amt;
+            return `#${(
+                0x1000000 + 
+                (R > 0 ? R : 0) * 0x10000 + 
+                (G > 0 ? G : 0) * 0x100 + 
+                (B > 0 ? B : 0)
+            ).toString(16).slice(1)}`;
+        }
+
+        // Game state
+        const worms = {};
+        const foods = [];
+        const powerups = [];
+        let myWorm = new Worm(
+            'player', 
+            `hsl(${Math.random() * 360}, 80%, 50%)`, 
+            playerName,
+            canvas.width / 2,
+            canvas.height / 2
+        );
+        let gameOver = false;
+        let lastFoodSpawn = 0;
+        let lastPowerupCheck = 0;
+
+        // Initialize food
+        function spawnFood(amount = 1) {
+            for (let i = 0; i < amount; i++) {
+                foods.push(new Food());
+            }
+        }
+        spawnFood(config.food.spawnAmount);
+
+        // WebSocket handlers
+        socket.onopen = () => {
+            socket.send(JSON.stringify({ 
+                type: "join", 
+                name: myWorm.name, 
+                color: myWorm.color,
+                x: myWorm.segments[0].x,
+                y: myWorm.segments[0].y
+            }));
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            switch (data.type) {
+                case "update":
+                    if (!worms[data.id]) {
+                        worms[data.id] = new Worm(
+                            data.id,
+                            data.worm.color,
+                            data.worm.name,
+                            data.worm.segments[0].x,
+                            data.worm.segments[0].y
+                        );
+                    }
+                    worms[data.id].segments = data.worm.segments;
+                    worms[data.id].direction = data.worm.direction;
+                    worms[data.id].score = data.worm.score;
+                    break;
+                    
+                case "playerLeft":
+                    delete worms[data.id];
+                    break;
+                    
+                case "food":
+                    foods.push(new Food());
+                    break;
+                    
+                case "powerup":
+                    powerups.push(new PowerUp());
+                    break;
+                    
+                case "gameOver":
+                    gameOver = true;
+                    alert(`Game Over! Your score: ${myWorm.score}`);
+                    break;
+            }
+        };
+
+        // Input handling
+        document.addEventListener("keydown", (event) => {
+            if (gameOver) return;
+            
+            switch (event.key) {
+                case "ArrowUp":
+                    myWorm.changeDirection({ x: 0, y: -1 });
+                    break;
+                case "ArrowDown":
+                    myWorm.changeDirection({ x: 0, y: 1 });
+                    break;
+                case "ArrowLeft":
+                    myWorm.changeDirection({ x: -1, y: 0 });
+                    break;
+                case "ArrowRight":
+                    myWorm.changeDirection({ x: 1, y: 0 });
+                    break;
+            }
+            sendWormUpdate();
+        });
+
+        // Mobile controls
+        document.getElementById('upBtn').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            myWorm.changeDirection({ x: 0, y: -1 });
+            sendWormUpdate();
+        });
+        
+        document.getElementById('downBtn').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            myWorm.changeDirection({ x: 0, y: 1 });
+            sendWormUpdate();
+        });
+        
+        document.getElementById('leftBtn').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            myWorm.changeDirection({ x: -1, y: 0 });
+            sendWormUpdate();
+        });
+        
+        document.getElementById('rightBtn').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            myWorm.changeDirection({ x: 1, y: 0 });
+            sendWormUpdate();
+        });
+
+        function sendWormUpdate() {
+            socket.send(JSON.stringify({ 
+                type: "move", 
+                worm: {
+                    segments: myWorm.segments,
+                    direction: myWorm.direction,
+                    color: myWorm.color,
+                    name: myWorm.name,
+                    score: myWorm.score
+                }
+            }));
+        }
+
+        // Collision detection
+        function checkFoodCollision() {
+            const head = myWorm.segments[0];
+            
+            for (let i = foods.length - 1; i >= 0; i--) {
+                const food = foods[i];
+                const distance = Math.hypot(head.x - food.x, head.y - food.y);
+                
+                if (distance < config.worm.segmentSize + food.size) {
+                    myWorm.grow(food.nutrition);
+                    foods.splice(i, 1);
+                    spawnFood(1);
+                    
+                    // Notify server about food collection
+                    socket.send(JSON.stringify({ type: "foodCollected" }));
+                    
+                    // Update score display
+                    scoreBoard.textContent = `Score: ${myWorm.score}`;
+                }
+            }
+        }
+
+        function checkPowerupCollision() {
+            const head = myWorm.segments[0];
+            
+            for (let i = powerups.length - 1; i >= 0; i--) {
+                const powerup = powerups[i];
+                const distance = Math.hypot(head.x - powerup.x, head.y - powerup.y);
+                
+                if (distance < config.worm.segmentSize + powerup.size) {
+                    myWorm.addEffect(powerup.type, powerup.duration, powerup.multiplier);
+                    powerups.splice(i, 1);
+                    
+                    // Notify server about powerup collection
+                    socket.send(JSON.stringify({ 
+                        type: "powerupCollected", 
+                        powerup: powerup.type 
+                    }));
+                }
+            }
+        }
+
+        function checkWormCollisions() {
+            if (myWorm.isInvincible || myWorm.isGhost) return false;
+            
+            const head = myWorm.segments[0];
+            
+            // Check collision with own body
+            for (let i = 4; i < myWorm.segments.length; i++) {
+                const segment = myWorm.segm
