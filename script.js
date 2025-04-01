@@ -4,7 +4,7 @@ const ctx = canvas.getContext("2d");
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
-const socket = new WebSocket("wss://your-server-url"); // Replace with your WebSocket server
+const socket = new WebSocket("ws://localhost:8080");
 
 let playerName = prompt("Enter your name:") || "Player";
 
@@ -33,7 +33,7 @@ class Worm {
             ctx.arc(segment.x, segment.y, 10, 0, Math.PI * 2);
             ctx.fill();
         });
-
+        
         ctx.fillStyle = "white";
         ctx.font = "14px Arial";
         ctx.fillText(this.name, this.segments[0].x - 10, this.segments[0].y - 15);
@@ -74,13 +74,13 @@ document.addEventListener("keydown", (event) => {
 
 function gameLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
+    
     ctx.fillStyle = "#2b2b2b"; // Ground color
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    
     myWorm.move();
     myWorm.draw();
-
+    
     for (let id in worms) {
         const worm = worms[id];
         ctx.fillStyle = worm.color;
@@ -89,7 +89,7 @@ function gameLoop() {
             ctx.arc(segment.x, segment.y, 10, 0, Math.PI * 2);
             ctx.fill();
         });
-
+        
         ctx.fillStyle = "white";
         ctx.font = "14px Arial";
         ctx.fillText(worm.name, worm.segments[0].x - 10, worm.segments[0].y - 15);
